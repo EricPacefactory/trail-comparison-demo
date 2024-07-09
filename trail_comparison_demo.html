@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8">
+  <link rel="icon" href="data:,">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  
+  <script src="trail_comparison.js"></script>
+  <title>Trail Comparison Demo</title>
+</head>
+
+<style>
+
+  body {
+    background-color: rgb(80,80,80);
+    display: flex;
+    flex-flow: column nowrap;
+    justify-content: center;
+    align-items: center;
+    font-family: monospace;
+    color: white;
+  }
+
+  canvas {
+    width: 640px;
+    height: 640px;
+    margin: 0rem;
+    padding: 0;
+  }
+  
+  select {
+    min-width: 18ch;
+    font-family: monospace;
+    text-align: center;
+  }
+  
+  p {
+    font-size: 1.5rem;
+    margin: 0;
+  }
+
+  input[type="range"] {
+    width: 16rem;
+  }
+
+  .margin {
+    margin: 2rem;
+  }
+  
+  .row {
+    display: flex;
+    flex-flow: row nowrap;
+    gap: 1rem;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  .column {
+    display: flex;
+    flex-flow: column nowrap;
+    align-items: center;
+    justify-content: center;
+  }
+  
+  #canvas_stack {
+    background-color: black;
+    outline: solid 2px lightgray;
+    display: grid;
+    grid-template-areas: "base, overlay";
+  }
+
+  #base_canvas {
+    grid-area: base;
+  }
+
+  #overlay_canvas {
+    grid-area: overlay;
+  }
+
+</style>
+
+<body>
+
+  <h1>Trail Comparison Demo</h1>
+
+  <main class="column">
+
+    <div class="row">
+        
+      <div class="column">
+        <label for="reference_select_elem">Reference trail:</label>
+        <select id="reference_select_elem">
+          <option disabled>...no options...</option>
+        </select>
+      </div>
+      
+      <div class="column">
+        <label for="comparison_select_elem">Comparison trail:</label>
+        <select id="comparison_select_elem">
+          <option disabled>...no options...</option>
+        </select>
+      </div>
+    </div>
+
+    
+    <div id="canvas_stack" class="margin">
+      <canvas id="base_canvas"></canvas>
+      <canvas id="overlay_canvas"></canvas>
+    </div>
+    
+    <div class="row">
+      <div class="column">
+        <label for="thickness_slider">Mask Thickness:</label>
+        <input type="range" id="thickness_slider" min="1" max="100" value="1">
+      </div>
+
+      <div class="column">
+        <label for="blur_slider">Mask Blur:</label>
+        <input type="range" id="blur_slider" min="0" max="100" value="0">
+      </div>
+
+    </div>
+
+    <p class="margin">Score: <span id="score_elem">???</span>%</p>
+
+  </main>
+
+<script>
+  
+  // -----------------------------------------------------------------------------------------------------------------
+  // Make example trail data
+
+  // Define all 'trail' patterns
+  // -> Using 'polar rose' patterns for simplicity
+  // -> Formula for trail is: r = a * cos(k * theta)
+  //   -> a is constant, theta varies from 0 to 2 * pi and different k values give different patterns
+  const num_patterns = 100;
+  const DATA = [];
+  for (let i = 0; i < num_patterns; i++) {
+    const rose_xy_list = [];
+    const rose_k = i > 0 ? (1+i) / 25 : 0;
+    const num_theta = Math.random() * 400 + 100;
+    for (let t = 0; t < num_theta; t++) {
+      const theta = 2 * Math.PI * t / (num_theta - 1);
+      const a = (Math.random() * 0.07 + 0.98) * 0.75;
+      const r = a * Math.cos(rose_k * theta);
+      const x = r * Math.cos(theta);
+      const y = r * Math.sin(theta);
+      rose_xy_list.push([(1 + x)/2, (1 + y)/2]);
+    }
+    DATA.push(rose_xy_list);
+  }
+
+
+  // -----------------------------------------------------------------------------------------------------------------
+  // DOM Setup
+
+  // Set up easier access to DOM elements
+  const elem_ids_list = [
+    "canvas_stack",
+    "base_canvas",
+    "overlay_canvas",
+    "reference_select_elem",
+    "comparison_select_elem",
+    "thickness_slider",
+    "blur_slider",
+    "score_elem",
+  ]
+  const DOM = {};
+  for (const elem_id of elem_ids_list) {
+    DOM[elem_id] = document.getElementById(elem_id);
+  }
+  
+  // Fill out trail selectors
+  const make_option_elems = (num_options) => {
+    const option_elems_list = []
+    for (let i = 0; i < num_options; i++) {
+      const option_elem = document.createElement("option");
+      option_elem.value = i;
+      option_elem.textContent = `Trail ${i}`;
+      option_elems_list.push(option_elem);
+    }
+    return option_elems_list;
+  }
+  DOM.reference_select_elem.replaceChildren(...make_option_elems(DATA.length));
+  DOM.comparison_select_elem.replaceChildren(...make_option_elems(DATA.length));
+  
+  // Set up canvases for visualization
+  const BASE_CTX = DOM.base_canvas.getContext("2d");
+  const OLAY_CTX = DOM.overlay_canvas.getContext("2d");
+
+  // Set up canvas sizing
+  const canvas_size = 640;
+  const canvas_style = `width: ${canvas_size}px; height: ${canvas_size}px;`;
+  DOM.overlay_canvas.style = canvas_style;
+  DOM.base_canvas.style = canvas_style;
+  DOM.canvas_stack.style = canvas_style;
+  BASE_CTX.canvas.width = canvas_size;
+  BASE_CTX.canvas.height = canvas_size;
+  OLAY_CTX.canvas.width = canvas_size;
+  OLAY_CTX.canvas.height = canvas_size;
+  
+  // Set style of overlay trails once, since it's always the same
+  OLAY_CTX.strokeStyle = "red";
+  OLAY_CTX.lineWidth = 4;
+  
+  
+  // -----------------------------------------------------------------------------------------------------------------
+  // *** MAIN CODE ***
+
+  // Make mask scoring object
+  const TRAILMASK = new TrailComparisonMask(DATA[0], 512, 512);
+  DOM.thickness_slider.value = 52;
+  DOM.blur_slider.value = 18;
+
+  // Define callback used to update comparison trail & scoring
+  const update_comparison_cb = () => {
+    const comparison_trail = DATA[DOM.comparison_select_elem.selectedIndex];
+    TRAILMASK.draw_trails(OLAY_CTX, comparison_trail, true);
+    const score = TRAILMASK.compare(comparison_trail);
+    DOM.score_elem.textContent = (score * 100).toFixed(0);
+  }
+  
+  // Define callback used to update reference trail and scoring
+  const update_reference_cb = () => {
+    const reference_trail = DATA[DOM.reference_select_elem.selectedIndex];
+    TRAILMASK.update_mask_parameters(reference_trail, DOM.thickness_slider.value, DOM.blur_slider.value);
+    TRAILMASK.visualize(BASE_CTX);
+    update_comparison_cb();
+  }
+  
+  // Set up event listeners
+  DOM.reference_select_elem.addEventListener("change", update_reference_cb);
+  DOM.comparison_select_elem.addEventListener("change", update_comparison_cb);
+  DOM.thickness_slider.addEventListener("input", update_reference_cb);
+  DOM.blur_slider.addEventListener("input", update_reference_cb);
+  
+  // Trigger initial update
+  DOM.reference_select_elem.selectedIndex = 5;
+  DOM.comparison_select_elem.selectedIndex = 3;
+  update_reference_cb();
+
+  // Some feedback/documentation
+  console.log(`
+    Demo page for image-based trail comparisons
+
+    Select a reference trail using the 'Reference trail' dropdown menu,
+    this will result in a white mask being drawn based on the chosen
+    mask thickness & blur sliders.
+
+    A trail can be selected for comparison using the 'Comparison trail'
+    dropdown menu, this will result in a red overlay trail being drawn
+    to help visualize how this trail compares to the reference mask.
+
+    After selecting a comparison trail, the comparison score will be
+    displays at the bottom of the page. Higher scores indicate a
+    better match between the two trails (100% being maximal).
+  `
+  );
+
+</script>
+
+
+</body>
+</html>
